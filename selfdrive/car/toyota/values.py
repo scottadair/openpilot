@@ -502,23 +502,6 @@ FW_VERSIONS = {
       b'\x028646F3305200\x00\x00\x00\x008646G5301200\x00\x00\x00\x00',
     ],
   },
-  CAR.CAMRYH_TSS2: {
-    (Ecu.eps, 0x7a1, None): [
-      b'8965B33630\x00\x00\x00\x00\x00\x00',
-    ],
-    (Ecu.esp, 0x7b0, None): [
-      b'F152633D00\x00\x00\x00\x00\x00\x00',
-    ],
-    (Ecu.engine, 0x700, None): [
-      b'\x018966306Q6000\x00\x00\x00\x00',
-    ],
-    (Ecu.fwdRadar, 0x750, 15): [
-      b'\x018821F6201200\x00\x00\x00\x00',
-    ],
-    (Ecu.fwdCamera, 0x750, 109): [
-      b'\x028646F3305200\x00\x00\x00\x008646G5301200\x00\x00\x00\x00',
-    ],
-  },
   CAR.CHR: {
     (Ecu.engine, 0x700, None): [
       b'\x01896631017100\x00\x00\x00\x00',

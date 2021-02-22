@@ -42,8 +42,6 @@ const bool env_send_wide_road = getenv("SEND_WIDE_ROAD") != NULL;
 
 typedef void (*release_cb)(void *cookie, int buf_idx);
 
-typedef void (*release_cb)(void *cookie, int buf_idx);
-
 typedef struct CameraInfo {
   int frame_width, frame_height;
   int frame_stride;

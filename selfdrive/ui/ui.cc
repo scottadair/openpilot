@@ -171,21 +171,9 @@ static void update_sockets(UIState *s) {
   } else if ((s->sm->frame - s->sm->rcv_frame("pandaState")) > 5*UI_FREQ) {
     scene.pandaType = cereal::PandaState::PandaType::UNKNOWN;
   }
-  if (sm.updated("health")) {
-    auto health = sm["health"].getHealth();
-    scene.pandaType = health.getPandaType();
-    s->ignition = health.getIgnitionLine() || health.getIgnitionCan();
-  } else if ((s->sm->frame - s->sm->rcv_frame("health")) > 5*UI_FREQ) {
-    scene.pandaType = cereal::HealthData::PandaType::UNKNOWN;
-  }
   if (sm.updated("ubloxGnss")) {
     auto data = sm["ubloxGnss"].getUbloxGnss();
     if (data.which() == cereal::UbloxGnss::MEASUREMENT_REPORT) {
-      auto measurements = data.getMeasurementReport().getMeasurements();
-      for (auto m : measurements) {
-        scene.cnoAvg += m.getCno();
-      }
-      scene.cnoAvg /= measurements.size();
       scene.satelliteCount = data.getMeasurementReport().getNumMeas();
     }
   }
@@ -292,36 +280,6 @@ static void update_vision(UIState *s) {
 #endif
     }
   }
-
-  // Handle onroad/offroad transition
-  static bool started_prev = false;
-  if (s->started != started_prev) {
-    if (s->started) {
-      s->status = STATUS_DISENGAGED;
-      s->started_frame = s->sm->frame;
-
-      read_param(&s->scene.is_rhd, "IsRHD");
-      s->active_app = cereal::UiLayoutState::App::NONE;
-      s->sidebar_collapsed = true;
-      s->scene.alert_size = cereal::ControlsState::AlertSize::NONE;
-      s->vipc_client = s->scene.frontview ? s->vipc_client_front : s->vipc_client_rear;
-    } else {
-      s->status = STATUS_OFFROAD;
-      s->active_app = cereal::UiLayoutState::App::HOME;
-      s->sidebar_collapsed = false;
-      s->sound->stop();
-      s->vipc_client->connected = false;
-    }
-  }
-  started_prev = s->started;
-}
-
-void ui_update(UIState *s) {
-  update_params(s);
-  update_sockets(s);
-  update_status(s);
-  update_alert(s);
-  update_vision(s);
 }
 
 static void update_status(UIState *s) {
