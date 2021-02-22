@@ -25,6 +25,7 @@
 #include "common/modeldata.h"
 #include "common/params.h"
 #include "common/glutil.h"
+#include "common/transformations/orientation.hpp"
 #include "sound.hpp"
 #include "visionipc.h"
 #include "visionipc_client.h"
@@ -95,7 +96,7 @@ typedef struct {
 
 typedef struct UIScene {
 
-  mat4 extrinsic_matrix;      // Last row is 0 so we can use mat4.
+  mat3 view_from_calib;
   bool world_objects_visible;
 
   bool is_rhd;
@@ -107,10 +108,10 @@ typedef struct UIScene {
   float alert_blinking_rate;
   cereal::ControlsState::AlertSize alert_size;
 
-  cereal::HealthData::PandaType pandaType;
+  cereal::PandaState::PandaType pandaType;
   NetStatus athenaStatus;
 
-  cereal::ThermalData::Reader thermal;
+  cereal::DeviceState::Reader deviceState;
   cereal::RadarState::LeadData::Reader lead_data[2];
   cereal::CarState::Reader car_state;
   cereal::ControlsState::Reader controls_state;
@@ -119,7 +120,7 @@ typedef struct UIScene {
 
   // gps
   int satelliteCount;
-  int cnoAvg;
+  bool gpsOK;
 
   // modelV2
   float lane_line_probs[4];

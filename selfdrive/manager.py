@@ -27,7 +27,7 @@ from selfdrive.version import version, dirty
 os.environ['BASEDIR'] = BASEDIR
 sys.path.append(os.path.join(BASEDIR, "pyextra"))
 
-TOTAL_SCONS_NODES = 1040
+TOTAL_SCONS_NODES = 1225
 MAX_BUILD_PROGRESS = 70
 WEBCAM = os.getenv("WEBCAM") is not None
 PREBUILT = os.path.exists(os.path.join(BASEDIR, 'prebuilt'))
@@ -173,7 +173,6 @@ managed_processes = {
   "camerad": ("selfdrive/camerad", ["./camerad"]),
   "sensord": ("selfdrive/sensord", ["./sensord"]),
   "clocksd": ("selfdrive/clocksd", ["./clocksd"]),
-  "gpsd": ("selfdrive/sensord", ["./gpsd"]),
   "updated": "selfdrive.updated",
   "dmonitoringmodeld": ("selfdrive/modeld", ["./dmonitoringmodeld"]),
   "modeld": ("selfdrive/modeld", ["./modeld"]),
@@ -252,7 +251,6 @@ if not PC or WEBCAM:
 
 if EON:
   car_started_processes += [
-    'gpsd',
     'rtshield',
   ]
 else:
@@ -461,16 +459,16 @@ def manager_thread():
   started_prev = False
   logger_dead = False
   params = Params()
-  thermal_sock = messaging.sub_sock('thermal')
+  device_state_sock = messaging.sub_sock('deviceState')
   pm = messaging.PubMaster(['managerState'])
 
   while 1:
-    msg = messaging.recv_sock(thermal_sock, wait=True)
+    msg = messaging.recv_sock(device_state_sock, wait=True)
 
-    if msg.thermal.freeSpacePercent < 0.05:
+    if msg.deviceState.freeSpacePercent < 5:
       logger_dead = True
 
-    if msg.thermal.started:
+    if msg.deviceState.started:
       for p in car_started_processes:
         if p == "loggerd" and logger_dead:
           kill_managed_process(p)
@@ -496,7 +494,7 @@ def manager_thread():
         os.sync()
         send_managed_process_signal("updated", signal.SIGHUP)
 
-    started_prev = msg.thermal.started
+    started_prev = msg.deviceState.started
 
     # check the status of all processes, did any of them die?
     running_list = ["%s%s\u001b[0m" % ("\u001b[32m" if running[p].is_alive() else "\u001b[31m", p) for p in running]

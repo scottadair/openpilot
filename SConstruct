@@ -163,6 +163,7 @@ env = Environment(
   CPPPATH=cpppath + [
     "#",
     "#selfdrive",
+    "#phonelibs/catch2/include",
     "#phonelibs/bzip2",
     "#phonelibs/libyuv/include",
     "#phonelibs/openmax/include",
@@ -266,7 +267,7 @@ qt_env = None
 if arch in ["x86_64", "Darwin", "larch64"]:
   qt_env = env.Clone()
 
-  qt_modules = ["Widgets", "Gui", "Core", "DBus", "Multimedia", "Network", "Concurrent"]
+  qt_modules = ["Widgets", "Gui", "Core", "DBus", "Multimedia", "Network", "Concurrent", "WebEngine", "WebEngineWidgets"]
 
   qt_libs = []
   if arch == "Darwin":

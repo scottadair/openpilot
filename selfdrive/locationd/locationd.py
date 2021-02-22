@@ -196,7 +196,7 @@ class Localizer():
 
     orientation_ecef = euler_from_quat(self.kf.x[States.ECEF_ORIENTATION])
     orientation_ned = ned_euler_from_ecef(ecef_pos, orientation_ecef)
-    orientation_ned_gps = np.array([0, 0, np.radians(log.bearing)])
+    orientation_ned_gps = np.array([0, 0, np.radians(log.bearingDeg)])
     orientation_error = np.mod(orientation_ned - orientation_ned_gps - np.pi, 2*np.pi) - np.pi
     initial_pose_ecef_quat = quat_from_euler(ecef_euler_from_ned(ecef_pos, orientation_ned_gps))
     if np.linalg.norm(ecef_vel) > 5 and np.linalg.norm(orientation_error) > 1:
@@ -240,6 +240,7 @@ class Localizer():
   def handle_sensors(self, current_time, log):
     # TODO does not yet account for double sensor readings in the log
     for sensor_reading in log:
+      sensor_time = 1e-9 * sensor_reading.timestamp
       # TODO: handle messages from two IMUs at the same time
       if sensor_reading.source == SensorSource.lsm6ds3:
         continue
@@ -249,7 +250,7 @@ class Localizer():
         self.gyro_counter += 1
         if self.gyro_counter % SENSOR_DECIMATION == 0:
           v = sensor_reading.gyroUncalibrated.v
-          self.update_kalman(current_time, ObservationKind.PHONE_GYRO, [-v[2], -v[1], -v[0]])
+          self.update_kalman(sensor_time, ObservationKind.PHONE_GYRO, [-v[2], -v[1], -v[0]])
 
       # Accelerometer
       if sensor_reading.sensor == 1 and sensor_reading.type == 1:
@@ -260,7 +261,7 @@ class Localizer():
         self.acc_counter += 1
         if self.acc_counter % SENSOR_DECIMATION == 0:
           v = sensor_reading.acceleration.v
-          self.update_kalman(current_time, ObservationKind.PHONE_ACCEL, [-v[2], -v[1], -v[0]])
+          self.update_kalman(sensor_time, ObservationKind.PHONE_ACCEL, [-v[2], -v[1], -v[0]])
 
   def handle_live_calib(self, current_time, log):
     if len(log.rpyCalib):
