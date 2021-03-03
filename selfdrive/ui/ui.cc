@@ -283,7 +283,6 @@ static void update_vision(UIState *s) {
       ui_init_vision(s);
     }
   }
-}
 
   if (s->vipc_client->connected){
     VisionBuf * buf = s->vipc_client->recv();
