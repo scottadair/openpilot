@@ -144,6 +144,7 @@ HomeWindow::HomeWindow(QWidget* parent) : QWidget(parent) {
   layout->addWidget(home, 0, 0);
   QObject::connect(glWindow, SIGNAL(offroadTransition(bool)), this, SLOT(setVisibility(bool)));
   QObject::connect(glWindow, SIGNAL(offroadTransition(bool)), this, SIGNAL(offroadTransition(bool)));
+  QObject::connect(glWindow, SIGNAL(screen_shutoff()), this, SIGNAL(closeSettings()));
   QObject::connect(this, SIGNAL(openSettings()), home, SLOT(refresh()));
   setLayout(layout);
   setStyleSheet(R"(
@@ -159,7 +160,11 @@ void HomeWindow::setVisibility(bool offroad) {
 
 void HomeWindow::mousePressEvent(QMouseEvent* e) {
   UIState* ui_state = &glWindow->ui_state;
-
+  if (GLWindow::ui_state.scene.started && GLWindow::ui_state.scene.driver_view) {
+    Params().write_db_value("IsDriverViewEnabled", "0", 1);
+    return;
+  }
+  
   glWindow->wake();
 
   // Settings button click
@@ -168,7 +173,7 @@ void HomeWindow::mousePressEvent(QMouseEvent* e) {
   }
 
   // Vision click
-  if (ui_state->started && (e->x() >= ui_state->viz_rect.x - bdr_s)) {
+  if (ui_state->scene.started && (e->x() >= ui_state->viz_rect.x - bdr_s)) {
     ui_state->sidebar_collapsed = !ui_state->sidebar_collapsed;
   }
 }
@@ -177,7 +182,7 @@ static void handle_display_state(UIState* s, bool user_input) {
   static int awake_timeout = 0; // Somehow this only gets called on program start
   awake_timeout = std::max(awake_timeout - 1, 0);
 
-  if (user_input || s->ignition || s->started) {
+  if (user_input || s->scene.ignition || s->scene.started) {
     s->awake = true;
     awake_timeout = 30 * UI_FREQ;
   } else if (awake_timeout == 0) {
@@ -235,14 +240,14 @@ void GLWindow::backlightUpdate() {
   // Update brightness
   float k = (BACKLIGHT_DT / BACKLIGHT_TS) / (1.0f + BACKLIGHT_DT / BACKLIGHT_TS);
 
-  float clipped_brightness = std::min(1023.0f, (ui_state.light_sensor * brightness_m) + brightness_b);
+  float clipped_brightness = std::min(1023.0f, (ui_state.scene.light_sensor * brightness_m) + brightness_b);
   smooth_brightness = clipped_brightness * k + smooth_brightness * (1.0f - k);
   int brightness = smooth_brightness;
 
   if (!ui_state.awake) {
     brightness = 0;
+    emit screen_shutoff();
   }
-
   std::thread{set_backlight, brightness}.detach();
 }
 
@@ -252,8 +257,8 @@ void GLWindow::timerUpdate() {
     makeCurrent();
   }
 
-  if (ui_state.started != onroad) {
-    onroad = ui_state.started;
+  if (ui_state.scene.started != onroad) {
+    onroad = ui_state.scene.started;
     emit offroadTransition(!onroad);
 
     // Change timeout to 0 when onroad, this will call timerUpdate continously.
