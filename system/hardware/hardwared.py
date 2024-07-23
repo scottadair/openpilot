@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import os
 import json
+import os
 import queue
 import threading
 import time
@@ -16,13 +16,13 @@ from openpilot.common.dict_helpers import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_HW
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.alertmanager import set_offroad_alert
-from openpilot.system.hardware import HARDWARE, TICI, AGNOS
+from openpilot.system.hardware import AGNOS, HARDWARE, TICI
+from openpilot.system.hardware.fan_controller import TiciFanController
+from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.system.statsd import statlog
-from openpilot.common.swaglog import cloudlog
-from openpilot.system.hardware.power_monitoring import PowerMonitoring
-from openpilot.system.hardware.fan_controller import TiciFanController
 from openpilot.system.version import terms_version, training_version
 
 ThermalStatus = log.DeviceState.ThermalStatus
@@ -325,7 +325,7 @@ def hardware_thread(end_event, hw_queue) -> None:
           try:
             with open("/sys/block/nvme0n1/device/model") as f:
               model = f.read().strip()
-            if not model.startswith("Samsung SSD 980") and params.get("Offroad_BadNvme") is None:
+            if not model.startswith("Samsung SSD 9") and params.get("Offroad_BadNvme") is None:
               set_offroad_alert_if_changed("Offroad_BadNvme", True)
               cloudlog.event("Unsupported NVMe", model=model, error=True)
           except Exception:
