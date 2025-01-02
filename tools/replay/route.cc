@@ -1,16 +1,12 @@
 #include "tools/replay/route.h"
 
-#include <QDir>
-#include <QEventLoop>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QtConcurrent>
 #include <array>
 #include <filesystem>
 #include <regex>
 
-#include "selfdrive/ui/qt/api.h"
+#include "third_party/json11/json11.hpp"
 #include "system/hardware/hw.h"
+#include "tools/replay/api.h"
 #include "tools/replay/replay.h"
 #include "tools/replay/util.h"
 
@@ -53,7 +49,11 @@ bool Route::load() {
     rInfo("invalid route format");
     return false;
   }
-  date_time_ = QDateTime::fromString(route_.timestamp.c_str(), "yyyy-MM-dd--HH-mm-ss");
+
+  struct tm tm_time = {0};
+  strptime(route_.timestamp.c_str(), "%Y-%m-%d--%H-%M-%S", &tm_time);
+  date_time_ = mktime(&tm_time);
+
   bool ret = data_dir_.empty() ? loadFromServer() : loadFromLocal();
   if (ret) {
     if (route_.begin_segment == -1) route_.begin_segment = segments_.rbegin()->first;
@@ -70,42 +70,48 @@ bool Route::load() {
 }
 
 bool Route::loadFromServer(int retries) {
+  const std::string url = CommaApi2::BASE_URL + "/v1/route/" + route_.str + "/files";
   for (int i = 1; i <= retries; ++i) {
-    QString result;
-    QEventLoop loop;
-    HttpRequest http(nullptr, !Hardware::PC());
-    QObject::connect(&http, &HttpRequest::requestDone, [&loop, &result](const QString &json, bool success, QNetworkReply::NetworkError err) {
-      result = json;
-      loop.exit((int)err);
-    });
-    http.sendRequest(CommaApi::BASE_URL + "/v1/route/" + QString::fromStdString(route_.str) + "/files");
-    auto err = (QNetworkReply::NetworkError)loop.exec();
-    if (err == QNetworkReply::NoError) {
+    long response_code = 0;
+    std::string result = CommaApi2::httpGet(url, &response_code);
+    if (response_code == 200) {
       return loadFromJson(result);
-    } else if (err == QNetworkReply::ContentAccessDenied || err == QNetworkReply::AuthenticationRequiredError) {
-      rWarning(">>  Unauthorized. Authenticate with tools/lib/auth.py  <<");
-      err_ = RouteLoadError::AccessDenied;
-      return false;
-    } else if (err == QNetworkReply::ContentNotFoundError) {
+    }
+
+    if (response_code == 401 || response_code == 403) {
+      rWarning(">> Unauthorized. Authenticate with tools/lib/auth.py <<");
+      err_ = RouteLoadError::Unauthorized;
+      break;
+    }
+    if (response_code == 404) {
       rWarning("The specified route could not be found on the server.");
       err_ = RouteLoadError::FileNotFound;
-      return false;
-    } else {
-      err_ = RouteLoadError::NetworkError;
+      break;
     }
+
+    err_ = RouteLoadError::NetworkError;
     rWarning("Retrying %d/%d", i, retries);
     util::sleep_for(3000);
   }
+
   return false;
 }
 
-bool Route::loadFromJson(const QString &json) {
-  QRegExp rx(R"(\/(\d+)\/)");
-  for (const auto &value : QJsonDocument::fromJson(json.trimmed().toUtf8()).object()) {
-    for (const auto &url : value.toArray()) {
-      QString url_str = url.toString();
-      if (rx.indexIn(url_str) != -1) {
-        addFileToSegment(rx.cap(1).toInt(), url_str.toStdString());
+bool Route::loadFromJson(const std::string &json) {
+  const static std::regex rx(R"(\/(\d+)\/)");
+  std::string err;
+  auto jsonData = json11::Json::parse(json, err);
+  if (!err.empty()) {
+    rWarning("JSON parsing error: %s", err.c_str());
+    return false;
+  }
+  for (const auto &value : jsonData.object_items()) {
+    const auto &urlArray = value.second.array_items();
+    for (const auto &url : urlArray) {
+      std::string url_str = url.string_value();
+      std::smatch match;
+      if (std::regex_search(url_str, match, rx)) {
+        addFileToSegment(std::stoi(match[1]), url_str);
       }
     }
   }
@@ -151,8 +157,9 @@ void Route::addFileToSegment(int n, const std::string &file) {
 
 // class Segment
 
-Segment::Segment(int n, const SegmentFile &files, uint32_t flags, const std::vector<bool> &filters)
-    : seg_num(n), flags(flags), filters_(filters) {
+Segment::Segment(int n, const SegmentFile &files, uint32_t flags, const std::vector<bool> &filters,
+                 std::function<void(int, bool)> callback)
+    : seg_num(n), flags(flags), filters_(filters), on_load_finished_(callback) {
   // [RoadCam, DriverCam, WideRoadCam, log]. fallback to qcamera/qlog
   const std::array file_list = {
       (flags & REPLAY_FLAG_QCAMERA) || files.road_cam.empty() ? files.qcamera : files.road_cam,
@@ -163,16 +170,20 @@ Segment::Segment(int n, const SegmentFile &files, uint32_t flags, const std::vec
   for (int i = 0; i < file_list.size(); ++i) {
     if (!file_list[i].empty() && (!(flags & REPLAY_FLAG_NO_VIPC) || i >= MAX_CAMERAS)) {
       ++loading_;
-      synchronizer_.addFuture(QtConcurrent::run(this, &Segment::loadFile, i, file_list[i]));
+      threads_.emplace_back(&Segment::loadFile, this, i, file_list[i]);
     }
   }
 }
 
 Segment::~Segment() {
-  disconnect();
+  {
+    std::lock_guard lock(mutex_);
+    on_load_finished_ = nullptr;  // Prevent callback after destruction
+  }
   abort_ = true;
-  synchronizer_.setCancelOnWait(true);
-  synchronizer_.waitForFinished();
+  for (auto &thread : threads_) {
+    if (thread.joinable()) thread.join();
+  }
 }
 
 void Segment::loadFile(int id, const std::string file) {
@@ -192,6 +203,15 @@ void Segment::loadFile(int id, const std::string file) {
   }
 
   if (--loading_ == 0) {
-    emit loadFinished(!abort_);
+    std::lock_guard lock(mutex_);
+    load_state_ = !abort_ ? LoadState::Loaded : LoadState::Failed;
+    if (on_load_finished_) {
+      on_load_finished_(seg_num, !abort_);
+    }
   }
+}
+
+Segment::LoadState Segment::getState() {
+  std::scoped_lock lock(mutex_);
+  return load_state_;
 }

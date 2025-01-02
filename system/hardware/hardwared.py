@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import fcntl
+import os
 import json
 import os
 import queue
+import struct
 import threading
 import time
 from collections import OrderedDict, namedtuple
@@ -67,48 +70,6 @@ OFFROAD_DANGER_TEMP = 75
 
 prev_offroad_states: dict[str, tuple[bool, str | None]] = {}
 
-tz_by_type: dict[str, int] | None = None
-
-
-def populate_tz_by_type():
-    global tz_by_type
-    tz_by_type = {}
-    for n in os.listdir("/sys/devices/virtual/thermal"):
-        if not n.startswith("thermal_zone"):
-            continue
-        with open(os.path.join("/sys/devices/virtual/thermal", n, "type")) as f:
-            tz_by_type[f.read().strip()] = int(n.removeprefix("thermal_zone"))
-
-
-def read_tz(x):
-    if x is None:
-        return 0
-
-    if isinstance(x, str):
-        if tz_by_type is None:
-            populate_tz_by_type()
-        x = tz_by_type[x]
-
-    try:
-        with open(f"/sys/devices/virtual/thermal/thermal_zone{x}/temp") as f:
-            return int(f.read())
-    except FileNotFoundError:
-        return 0
-
-
-def read_thermal(thermal_config):
-    dat = messaging.new_message("deviceState", valid=True)
-    dat.deviceState.cpuTempC = [
-        read_tz(z) / thermal_config.cpu[1] for z in thermal_config.cpu[0]
-    ]
-    dat.deviceState.gpuTempC = [
-        read_tz(z) / thermal_config.gpu[1] for z in thermal_config.gpu[0]
-    ]
-    dat.deviceState.memoryTempC = read_tz(thermal_config.mem[0]) / thermal_config.mem[1]
-    dat.deviceState.pmicTempC = [
-        read_tz(z) / thermal_config.pmic[1] for z in thermal_config.pmic[0]
-    ]
-    return dat
 
 
 def set_offroad_alert_if_changed(
@@ -119,17 +80,50 @@ def set_offroad_alert_if_changed(
     prev_offroad_states[offroad_alert] = (show_alert, extra_text)
     set_offroad_alert(offroad_alert, show_alert, extra_text)
 
+def touch_thread(end_event):
+  count = 0
+
+  pm = messaging.PubMaster(["touch"])
+
+  event_format = "llHHi"
+  event_size = struct.calcsize(event_format)
+  event_frame = []
+
+  with open("/dev/input/by-path/platform-894000.i2c-event", "rb") as event_file:
+    fcntl.fcntl(event_file, fcntl.F_SETFL, os.O_NONBLOCK)
+    while not end_event.is_set():
+      if (count % int(1. / DT_HW)) == 0:
+        event = event_file.read(event_size)
+        if event:
+          (sec, usec, etype, code, value) = struct.unpack(event_format, event)
+          if etype != 0 or code != 0 or value != 0:
+            touch = log.Touch.new_message()
+            touch.sec = sec
+            touch.usec = usec
+            touch.type = etype
+            touch.code = code
+            touch.value = value
+            event_frame.append(touch)
+          else: # end of frame, push new log
+            msg = messaging.new_message('touch', len(event_frame), valid=True)
+            msg.touch = event_frame
+            pm.send('touch', msg)
+            event_frame = []
+          continue
+
+      count += 1
+      time.sleep(DT_HW)
+
 
 def hw_state_thread(end_event, hw_queue):
     """Handles non critical hardware state, and sends over queue"""
     count = 0
     prev_hw_state = None
 
-    modem_version = None
-    modem_nv = None
-    modem_configured = False
-    modem_restarted = False
-    modem_missing_count = 0
+  modem_version = None
+  modem_configured = False
+  modem_restarted = False
+  modem_missing_count = 0
 
     while not end_event.is_set():
         # these are expensive calls. update every 10s
@@ -140,27 +134,22 @@ def hw_state_thread(end_event, hw_queue):
                 if len(modem_temps) == 0 and prev_hw_state is not None:
                     modem_temps = prev_hw_state.modem_temps
 
-                # Log modem version once
-                if AGNOS and ((modem_version is None) or (modem_nv is None)):
-                    modem_version = HARDWARE.get_modem_version()
-                    modem_nv = HARDWARE.get_modem_nv()
+        # Log modem version once
+        if AGNOS and (modem_version is None):
+          modem_version = HARDWARE.get_modem_version()
 
-                    if (modem_version is not None) and (modem_nv is not None):
-                        cloudlog.event(
-                            "modem version", version=modem_version, nv=modem_nv
-                        )
-                    else:
-                        if not modem_restarted:
-                            # TODO: we may be able to remove this with a MM update
-                            # ModemManager's probing on startup can fail
-                            # rarely, restart the service to probe again.
-                            modem_missing_count += 1
-                            if modem_missing_count > 3:
-                                modem_restarted = True
-                                cloudlog.event("restarting ModemManager")
-                                os.system(
-                                    "sudo systemctl restart --no-block ModemManager"
-                                )
+          if modem_version is not None:
+            cloudlog.event("modem version", version=modem_version)
+          else:
+            if not modem_restarted:
+              # TODO: we may be able to remove this with a MM update
+              # ModemManager's probing on startup can fail
+              # rarely, restart the service to probe again.
+              modem_missing_count += 1
+              if modem_missing_count > 3:
+                modem_restarted = True
+                cloudlog.event("restarting ModemManager")
+                os.system("sudo systemctl restart --no-block ModemManager")
 
                 tx, rx = HARDWARE.get_modem_data_usage()
 
@@ -179,14 +168,10 @@ def hw_state_thread(end_event, hw_queue):
                 except queue.Full:
                     pass
 
-                # TODO: remove this once the config is in AGNOS
-                if (
-                    not modem_configured
-                    and len(HARDWARE.get_sim_info().get("sim_id", "")) > 0
-                ):
-                    cloudlog.warning("configuring modem")
-                    HARDWARE.configure_modem()
-                    modem_configured = True
+        if not modem_configured and HARDWARE.get_modem_version() is not None:
+          cloudlog.warning("configuring modem")
+          HARDWARE.configure_modem()
+          modem_configured = True
 
                 prev_hw_state = hw_state
             except Exception:
@@ -282,12 +267,101 @@ def hardware_thread(end_event, hw_queue) -> None:
         ) and not ign_edge:
             continue
 
-        msg = read_thermal(thermal_config)
-        msg.deviceState.deviceType = HARDWARE.get_device_type()
+    msg = messaging.new_message('deviceState', valid=True)
+    msg.deviceState = thermal_config.get_msg()
+    msg.deviceState.deviceType = HARDWARE.get_device_type()
 
-        try:
-            last_hw_state = hw_queue.get_nowait()
-        except queue.Empty:
+    try:
+      last_hw_state = hw_queue.get_nowait()
+    except queue.Empty:
+      pass
+
+    msg.deviceState.freeSpacePercent = get_available_percent(default=100.0)
+    msg.deviceState.memoryUsagePercent = int(round(psutil.virtual_memory().percent))
+    msg.deviceState.gpuUsagePercent = int(round(HARDWARE.get_gpu_usage_percent()))
+    online_cpu_usage = [int(round(n)) for n in psutil.cpu_percent(percpu=True)]
+    offline_cpu_usage = [0., ] * (len(msg.deviceState.cpuTempC) - len(online_cpu_usage))
+    msg.deviceState.cpuUsagePercent = online_cpu_usage + offline_cpu_usage
+
+    msg.deviceState.networkType = last_hw_state.network_type
+    msg.deviceState.networkMetered = last_hw_state.network_metered
+    msg.deviceState.networkStrength = last_hw_state.network_strength
+    msg.deviceState.networkStats = last_hw_state.network_stats
+    if last_hw_state.network_info is not None:
+      msg.deviceState.networkInfo = last_hw_state.network_info
+
+    msg.deviceState.nvmeTempC = last_hw_state.nvme_temps
+    msg.deviceState.modemTempC = last_hw_state.modem_temps
+
+    msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
+
+    # this subset is only used for offroad
+    temp_sources = [
+      msg.deviceState.memoryTempC,
+      max(msg.deviceState.cpuTempC, default=0.),
+      max(msg.deviceState.gpuTempC, default=0.),
+    ]
+    offroad_comp_temp = offroad_temp_filter.update(max(temp_sources))
+
+    # this drives the thermal status while onroad
+    temp_sources.append(max(msg.deviceState.pmicTempC, default=0.))
+    all_comp_temp = all_temp_filter.update(max(temp_sources))
+    msg.deviceState.maxTempC = all_comp_temp
+
+    if fan_controller is not None:
+      msg.deviceState.fanSpeedPercentDesired = fan_controller.update(all_comp_temp, onroad_conditions["ignition"])
+
+    is_offroad_for_5_min = (started_ts is None) and ((not started_seen) or (off_ts is None) or (time.monotonic() - off_ts > 60 * 5))
+    if is_offroad_for_5_min and offroad_comp_temp > OFFROAD_DANGER_TEMP:
+      # if device is offroad and already hot without the extra onroad load,
+      # we want to cool down first before increasing load
+      thermal_status = ThermalStatus.danger
+    else:
+      current_band = THERMAL_BANDS[thermal_status]
+      band_idx = list(THERMAL_BANDS.keys()).index(thermal_status)
+      if current_band.min_temp is not None and all_comp_temp < current_band.min_temp:
+        thermal_status = list(THERMAL_BANDS.keys())[band_idx - 1]
+      elif current_band.max_temp is not None and all_comp_temp > current_band.max_temp:
+        thermal_status = list(THERMAL_BANDS.keys())[band_idx + 1]
+
+    # **** starting logic ****
+
+    startup_conditions["up_to_date"] = params.get("Offroad_ConnectivityNeeded") is None or params.get_bool("DisableUpdates") or params.get_bool("SnoozeUpdate")
+    startup_conditions["not_uninstalling"] = not params.get_bool("DoUninstall")
+    startup_conditions["accepted_terms"] = params.get("HasAcceptedTerms") == terms_version
+
+    # with 2% left, we killall, otherwise the phone will take a long time to boot
+    startup_conditions["free_space"] = msg.deviceState.freeSpacePercent > 2
+    startup_conditions["completed_training"] = params.get("CompletedTrainingVersion") == training_version
+    startup_conditions["not_driver_view"] = not params.get_bool("IsDriverViewEnabled")
+    startup_conditions["not_taking_snapshot"] = not params.get_bool("IsTakingSnapshot")
+
+    # must be at an engageable thermal band to go onroad
+    startup_conditions["device_temp_engageable"] = thermal_status < ThermalStatus.red
+
+    # ensure device is fully booted
+    startup_conditions["device_booted"] = startup_conditions.get("device_booted", False) or HARDWARE.booted()
+
+    # if the temperature enters the danger zone, go offroad to cool down
+    onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.danger
+    extra_text = f"{offroad_comp_temp:.1f}C"
+    show_alert = (not onroad_conditions["device_temp_good"] or not startup_conditions["device_temp_engageable"]) and onroad_conditions["ignition"]
+    set_offroad_alert_if_changed("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
+
+    # TODO: this should move to TICI.initialize_hardware, but we currently can't import params there
+    if TICI and HARDWARE.get_device_type() == "tici":
+      if not os.path.isfile("/persist/comma/living-in-the-moment"):
+        if not Path("/data/media").is_mount():
+          set_offroad_alert_if_changed("Offroad_StorageMissing", True)
+        else:
+          # check for bad NVMe
+          try:
+            with open("/sys/block/nvme0n1/device/model") as f:
+              model = f.read().strip()
+            if not model.startswith("Samsung SSD 980") and params.get("Offroad_BadNvme") is None:
+              set_offroad_alert_if_changed("Offroad_BadNvme", True)
+              cloudlog.event("Unsupported NVMe", model=model, error=True)
+          except Exception:
             pass
 
         msg.deviceState.freeSpacePercent = get_available_percent(default=100.0)
@@ -570,8 +644,11 @@ def main():
         threading.Thread(target=hardware_thread, args=(end_event, hw_queue)),
     ]
 
-    for t in threads:
-        t.start()
+  if TICI:
+    threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
+
+  for t in threads:
+    t.start()
 
     try:
         while True:

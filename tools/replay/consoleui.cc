@@ -1,11 +1,10 @@
 #include "tools/replay/consoleui.h"
 
+#include <time.h>
 #include <initializer_list>
 #include <string>
 #include <tuple>
 #include <utility>
-
-#include <QApplication>
 
 #include "common/ratekeeper.h"
 #include "common/util.h"
@@ -56,6 +55,8 @@ void add_str(WINDOW *w, const char *str, Color color = Color::Default, bool bold
   if (color != Color::Default) wattroff(w, COLOR_PAIR(color));
 }
 
+ExitHandler do_exit;
+
 }  // namespace
 
 ConsoleUI::ConsoleUI(Replay *replay) : replay(replay), sm({"carState", "liveParameters"}) {
@@ -94,6 +95,8 @@ ConsoleUI::ConsoleUI(Replay *replay) : replay(replay), sm({"carState", "livePara
 }
 
 ConsoleUI::~ConsoleUI() {
+  installDownloadProgressHandler(nullptr);
+  installMessageHandler(nullptr);
   endwin();
 }
 
@@ -152,7 +155,6 @@ void ConsoleUI::updateStatus() {
     add_str(win, unit.c_str());
   };
   static const std::pair<const char *, Color> status_text[] = {
-      {"loading...", Color::Red},
       {"playing", Color::Green},
       {"paused...", Color::Yellow},
   };
@@ -161,8 +163,10 @@ void ConsoleUI::updateStatus() {
 
   auto [status_str, status_color] = status_text[status];
   write_item(0, 0, "STATUS:    ", status_str, "      ", false, status_color);
+  auto cur_ts = replay->routeDateTime() + (int)replay->currentSeconds();
+  char *time_string = ctime(&cur_ts);
   std::string current_segment = " - " + std::to_string((int)(replay->currentSeconds() / 60));
-  write_item(0, 25, "TIME:  ", replay->currentDateTime().toString("ddd MMMM dd hh:mm:ss").toStdString(), current_segment, true);
+  write_item(0, 25, "TIME:  ", time_string, current_segment, true);
 
   auto p = sm["liveParameters"].getLiveParameters();
   write_item(1, 0, "STIFFNESS: ", util::string_format("%.2f %%", p.getStiffnessFactor() * 100), "  ");
@@ -231,7 +235,7 @@ void ConsoleUI::updateProgressBar() {
 
 void ConsoleUI::updateSummary() {
   const auto &route = replay->route();
-  mvwprintw(w[Win::Stats], 0, 0, "Route: %s, %lu segments", route->name().c_str(), route->segments().size());
+  mvwprintw(w[Win::Stats], 0, 0, "Route: %s, %lu segments", route.name().c_str(), route.segments().size());
   mvwprintw(w[Win::Stats], 1, 0, "Car Fingerprint: %s", replay->carFingerprint().c_str());
   wrefresh(w[Win::Stats]);
 }
@@ -247,18 +251,18 @@ void ConsoleUI::updateTimeline() {
   wattroff(win, COLOR_PAIR(Color::Disengaged));
 
   const int total_sec = replay->maxSeconds() - replay->minSeconds();
-  for (auto [begin, end, type] : replay->getTimeline()) {
-    int start_pos = ((begin - replay->minSeconds()) / total_sec) * width;
-    int end_pos = ((end - replay->minSeconds()) / total_sec) * width;
-    if (type == TimelineType::Engaged) {
+  for (const auto &entry : *replay->getTimeline()) {
+    int start_pos = ((entry.start_time - replay->minSeconds()) / total_sec) * width;
+    int end_pos = ((entry.end_time - replay->minSeconds()) / total_sec) * width;
+    if (entry.type == TimelineType::Engaged) {
       mvwchgat(win, 1, start_pos, end_pos - start_pos + 1, A_COLOR, Color::Engaged, NULL);
       mvwchgat(win, 2, start_pos, end_pos - start_pos + 1, A_COLOR, Color::Engaged, NULL);
-    } else if (type == TimelineType::UserFlag) {
+    } else if (entry.type == TimelineType::UserFlag) {
       mvwchgat(win, 3, start_pos, end_pos - start_pos + 1, ACS_S3, Color::Cyan, NULL);
     } else {
       auto color_id = Color::Green;
-      if (type != TimelineType::AlertInfo) {
-        color_id = type == TimelineType::AlertWarning ? Color::Yellow : Color::Red;
+      if (entry.type != TimelineType::AlertInfo) {
+        color_id = entry.type == TimelineType::AlertWarning ? Color::Yellow : Color::Red;
       }
       mvwchgat(win, 3, start_pos, end_pos - start_pos + 1, ACS_S3, color_id, NULL);
     }
@@ -347,7 +351,8 @@ void ConsoleUI::handleKey(char c) {
 
 int ConsoleUI::exec() {
   RateKeeper rk("Replay", 20);
-  while (true) {
+
+  while (!do_exit) {
     int c = getch();
     if (c == 'q' || c == 'Q') {
       break;
@@ -371,7 +376,6 @@ int ConsoleUI::exec() {
       logs.clear();
     }
 
-    qApp->processEvents();
     rk.keepTime();
   }
   return 0;

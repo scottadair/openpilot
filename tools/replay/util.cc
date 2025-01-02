@@ -14,7 +14,6 @@
 #include <map>
 #include <mutex>
 #include <numeric>
-#include <sstream>
 #include <utility>
 #include <zstd.h>
 
@@ -363,11 +362,11 @@ std::string decompressZST(const std::byte *in, size_t in_size, std::atomic<bool>
   return {};
 }
 
-void precise_nano_sleep(int64_t nanoseconds, std::atomic<bool> &should_exit) {
+void precise_nano_sleep(int64_t nanoseconds, std::atomic<bool> &interrupt_requested) {
   struct timespec req, rem;
   req.tv_sec = nanoseconds / 1000000000;
   req.tv_nsec = nanoseconds % 1000000000;
-  while (!should_exit) {
+  while (!interrupt_requested) {
 #ifdef __APPLE__
     int ret = nanosleep(&req, &rem);
     if (ret == 0 || errno != EINTR)
@@ -402,15 +401,6 @@ std::vector<std::string> split(std::string_view source, char delimiter) {
   }
   fields.emplace_back(source.substr(last));
   return fields;
-}
-
-std::string join(const std::vector<std::string> &elements, char separator) {
-  std::ostringstream oss;
-  for (size_t i = 0; i < elements.size(); ++i) {
-    if (i != 0) oss << separator;
-    oss << elements[i];
-  }
-  return oss.str();
 }
 
 std::string extractFileName(const std::string &file) {

@@ -486,6 +486,9 @@ struct DeviceState @0xa4d8b5af2aa492eb {
   nvmeTempC @35 :List(Float32);
   modemTempC @36 :List(Float32);
   pmicTempC @39 :List(Float32);
+  intakeTempC @46 :Float32;
+  exhaustTempC @47 :Float32;
+  caseTempC @48 :Float32;
   maxTempC @44 :Float32;  # max of other temps, used to control fan
   thermalZones @38 :List(ThermalZone);
   thermalStatus @14 :ThermalStatus;
@@ -844,7 +847,6 @@ struct ControlsState @0x97ff69c53601abf1 {
   lateralPlanMonoTime @50 :UInt64;
 
   longControlState @30 :Car.CarControl.Actuators.LongControlState;
-  vTargetLead @3 :Float32;
   upAccelCmd @4 :Float32;
   uiAccelCmd @5 :Float32;
   ufAccelCmd @33 :Float32;
@@ -853,7 +855,6 @@ struct ControlsState @0x97ff69c53601abf1 {
   forceDecel @51 :Bool;
 
   lateralControlState :union {
-    indiState @52 :LateralINDIState;
     pidState @53 :LateralPIDState;
     angleState @58 :LateralAngleState;
     debugState @59 :LateralDebugState;
@@ -861,6 +862,7 @@ struct ControlsState @0x97ff69c53601abf1 {
 
     curvatureStateDEPRECATED @65 :LateralCurvatureState;
     lqrStateDEPRECATED @55 :LateralLQRState;
+    indiStateDEPRECATED @52 :LateralINDIState;
   }
 
   struct LateralINDIState {
@@ -994,6 +996,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   startMonoTimeDEPRECATED @48 :UInt64;
   cumLagMsDEPRECATED @15 :Float32;
   aTargetDEPRECATED @35 :Float32;
+  vTargetLeadDEPRECATED @3 :Float32;
 }
 
 struct DrivingModelData {
@@ -2437,6 +2440,14 @@ struct Microphone {
   filteredSoundPressureWeightedDb @2 :Float32;
 }
 
+struct Touch {
+  sec @0 :Int64;
+  usec @1 :Int64;
+  type @2 :UInt8;
+  code @3 :Int32;
+  value @4 :Int32;
+}
+
 struct Event {
   logMonoTime @0 :UInt64;  # nanoseconds
   valid @67 :Bool = true;
@@ -2516,6 +2527,9 @@ struct Event {
     deviceState @6 :DeviceState;
     logMessage @18 :Text;
     errorLogMessage @85 :Text;
+
+    # touch frame
+    touch @135 :List(Touch);
 
     # navigation
     navInstruction @82 :NavInstruction;
